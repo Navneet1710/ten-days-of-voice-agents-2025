@@ -1,4 +1,8 @@
 import logging
+import json
+import os
+from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -12,8 +16,8 @@ from livekit.agents import (
     cli,
     metrics,
     tokenize,
-    # function_tool,
-    # RunContext
+    function_tool,
+    RunContext
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -23,31 +27,98 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 
-class Assistant(Agent):
+class CoffeeShopBarista(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
-            You are curious, friendly, and have a sense of humor.""",
+            instructions="""You are a friendly and enthusiastic barista at a specialty coffee shop called "Murf's Coffee House".
+            The user is interacting with you via voice to place a coffee order.
+            
+            Your goal is to take a complete coffee order by gathering the following information:
+            - Drink type (e.g., latte, cappuccino, espresso, americano, mocha, macchiato, flat white, etc.)
+            - Size (small, medium, or large)
+            - Milk preference (whole milk, skim milk, oat milk, almond milk, soy milk, coconut milk, or no milk)
+            - Any extras (e.g., extra shot, vanilla syrup, caramel syrup, hazelnut syrup, whipped cream, chocolate drizzle, etc.)
+            - Customer's name for the order
+            
+            Ask clarifying questions in a natural, friendly manner to gather any missing information.
+            Don't ask all questions at once - have a natural conversation.
+            Once you have all the information, use the complete_order tool to save the order.
+            
+            Your responses are concise, friendly, and conversational.
+            Avoid using complex formatting, emojis, asterisks, or other symbols in your responses.
+            Make the customer feel welcome and excited about their coffee!""",
         )
+        
+        # Initialize order state
+        self.order_state = {
+            "drinkType": None,
+            "size": None,
+            "milk": None,
+            "extras": [],
+            "name": None
+        }
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+    @function_tool
+    async def complete_order(
+        self, 
+        context: RunContext, 
+        drink_type: str,
+        size: str,
+        milk: str,
+        extras: str,
+        name: str
+    ):
+        """Complete and save the coffee order when all information has been collected.
+        
+        This tool should be called only when you have gathered all the required order information from the customer.
+        
+        Args:
+            drink_type: The type of drink ordered (e.g., latte, cappuccino, espresso)
+            size: The size of the drink (small, medium, or large)
+            milk: The type of milk (whole, skim, oat, almond, soy, coconut, or none)
+            extras: Comma-separated list of extras (e.g., "extra shot, vanilla syrup") or "none"
+            name: The customer's name for the order
+        """
+        
+        # Update order state
+        self.order_state["drinkType"] = drink_type
+        self.order_state["size"] = size
+        self.order_state["milk"] = milk
+        
+        # Parse extras
+        if extras and extras.lower() != "none":
+            self.order_state["extras"] = [e.strip() for e in extras.split(",")]
+        else:
+            self.order_state["extras"] = []
+            
+        self.order_state["name"] = name
+        
+        # Create orders directory if it doesn't exist
+        orders_dir = Path(__file__).parent.parent / "orders"
+        orders_dir.mkdir(exist_ok=True)
+        
+        # Create filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = orders_dir / f"order_{timestamp}.json"
+        
+        # Add timestamp to order data
+        order_data = {
+            **self.order_state,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Save order to JSON file
+        with open(filename, "w") as f:
+            json.dump(order_data, f, indent=2)
+        
+        logger.info(f"Order saved to {filename}: {order_data}")
+        
+        # Return confirmation message
+        extras_text = ""
+        if self.order_state["extras"]:
+            extras_text = f" with {', '.join(self.order_state['extras'])}"
+        
+        return f"Perfect! I've saved your order: {size} {drink_type} with {milk} milk{extras_text} for {name}. Your order has been saved and will be ready soon!"
 
 
 def prewarm(proc: JobProcess):
@@ -123,7 +194,7 @@ async def entrypoint(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=CoffeeShopBarista(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             # For telephony applications, use `BVCTelephony` for best results

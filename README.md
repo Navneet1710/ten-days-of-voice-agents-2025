@@ -170,7 +170,15 @@ Each day, you'll receive a new task that builds upon your voice agent. The tasks
 - Build domain-specific agents (customer service, tutoring, etc.)
 - Optimize performance and user experience
 
-**Stay tuned for daily task announcements!**
+### Current Tasks
+
+- **Day 1**: Get the starter voice agent running ✅
+- **Day 2**: Build a Coffee Shop Barista Agent ☕
+  - [Quick Start Guide](./QUICKSTART_DAY2.md) - Get up and running fast!
+  - [Detailed Setup Guide](./SETUP_DAY2.md) - Complete instructions
+  - [Day 2 Task Details](./challenges/Day%202%20Task.md) - Full requirements
+
+**Check the `challenges/` directory for more task details!**
 
 ## Documentation & Resources
 
