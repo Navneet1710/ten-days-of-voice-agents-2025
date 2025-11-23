@@ -1,0 +1,11 @@
+{
+  "drinkType": "latte",
+  "size": "medium",
+  "milk": "oat",
+  "extras": [
+    "vanilla syrup",
+    "extra shot"
+  ],
+  "name": "Alex",
+  "timestamp": "2024-01-23T14:30:25.123456"
+}

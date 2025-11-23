@@ -11,5 +11,6 @@ KMS
 .pytest_cache
 .ruff_cache
 
-# Ignore order JSON files but keep the directory and README
+# Ignore order JSON files but keep the directory, README, and example
 orders/*.json
+!orders/example_order.json
