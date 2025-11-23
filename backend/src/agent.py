@@ -118,7 +118,7 @@ class CoffeeShopBarista(Agent):
         if self.order_state["extras"]:
             extras_text = f" with {', '.join(self.order_state['extras'])}"
         
-        return f"Perfect! I've saved your order: {size} {drink_type} with {milk} milk{extras_text}. Order name: {name}. Your order has been saved to {filename.name}."
+        return f"Perfect! I've saved your order: {size} {drink_type} with {milk} milk{extras_text} for {name}. Your order has been saved and will be ready soon!"
 
 
 def prewarm(proc: JobProcess):
