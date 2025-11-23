@@ -1,6 +1,11 @@
 import logging
+import json
+from datetime import datetime
+from dataclasses import dataclass, field, asdict
+from typing import Annotated
 
 from dotenv import load_dotenv
+from pydantic import Field
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -12,8 +17,8 @@ from livekit.agents import (
     cli,
     metrics,
     tokenize,
-    # function_tool,
-    # RunContext
+    function_tool,
+    RunContext
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -23,31 +28,63 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 
-class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
-            You are curious, friendly, and have a sense of humor.""",
-        )
+@dataclass
+class CoffeeOrder:
+    """Order state for coffee orders"""
+    drinkType: str = ""
+    size: str = ""
+    milk: str = ""
+    extras: list[str] = field(default_factory=list)
+    name: str = ""
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+
+class Assistant(Agent):
+    def __init__(self, order: CoffeeOrder) -> None:
+        super().__init__(
+            instructions="""You are a friendly and enthusiastic barista at Starbucks. The user is interacting with you via voice to place their coffee order.
+
+Your goal is to collect a complete coffee order with: drink type, size, milk preference, customer name, and optionally extras.
+
+Ask one question at a time naturally. Once you have drink type, size, milk, and customer name, use the save_order tool to finalize the order.
+
+Keep responses concise and natural, without complex formatting, emojis, or asterisks.""",
+        )
+        self.order = order
+
+    @function_tool
+    async def save_order(
+        self,
+        context: RunContext,
+        drink_type: Annotated[str, Field(description="Type of coffee drink")],
+        size: Annotated[str, Field(description="Size of the drink")],
+        milk: Annotated[str, Field(description="Milk preference")],
+        customer_name: Annotated[str, Field(description="Customer's name")],
+        extras: Annotated[list[str], Field(description="List of extras")] = [],
+    ):
+        """Save the completed coffee order to a JSON file.
+        
+        Args:
+            drink_type: Type of coffee
+            size: Size of drink
+            milk: Milk preference
+            customer_name: Customer name
+            extras: Optional extras
+        """
+        self.order.drinkType = drink_type
+        self.order.size = size
+        self.order.milk = milk
+        self.order.extras = extras
+        self.order.name = customer_name
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"order_{customer_name}_{timestamp}.json"
+        
+        with open(filename, 'w') as f:
+            json.dump(asdict(self.order), f, indent=2)
+        
+        logger.info(f"Order saved to {filename}")
+        
+        return f"Perfect! Your {size} {drink_type} with {milk} is ready for {customer_name}. Order saved!"
 
 
 def prewarm(proc: JobProcess):
@@ -60,6 +97,9 @@ async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+
+    # Initialize coffee order state
+    coffee_order = CoffeeOrder()
 
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
@@ -123,7 +163,7 @@ async def entrypoint(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(order=coffee_order),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             # For telephony applications, use `BVCTelephony` for best results
