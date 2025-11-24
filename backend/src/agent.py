@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Annotated
+from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -27,64 +28,97 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+WELLNESS_LOG_FILE = "wellness_log.json"
+
 
 @dataclass
-class CoffeeOrder:
-    """Order state for coffee orders"""
-    drinkType: str = ""
-    size: str = ""
-    milk: str = ""
-    extras: list[str] = field(default_factory=list)
-    name: str = ""
+class WellnessLog:
+    """Manages wellness check-in history"""
+    
+    def load_history(self) -> list:
+        """Load previous check-ins from JSON file"""
+        if Path(WELLNESS_LOG_FILE).exists():
+            with open(WELLNESS_LOG_FILE, 'r') as f:
+                return json.load(f)
+        return []
+    
+    def get_last_checkin(self) -> dict | None:
+        """Get the most recent check-in"""
+        history = self.load_history()
+        return history[-1] if history else None
+    
+    def save_checkin(self, entry: dict) -> None:
+        """Append a new check-in entry to the log"""
+        history = self.load_history()
+        history.append(entry)
+        with open(WELLNESS_LOG_FILE, 'w') as f:
+            json.dump(history, f, indent=2)
 
 
 class Assistant(Agent):
-    def __init__(self, order: CoffeeOrder) -> None:
+    def __init__(self, wellness_log: WellnessLog) -> None:
+        # Get context from previous check-in if available
+        last_checkin = wellness_log.get_last_checkin()
+        context_note = ""
+        if last_checkin:
+            date = last_checkin.get('date', 'last time')
+            mood = last_checkin.get('mood', 'N/A')
+            context_note = f"\n\nPrevious check-in context: On {date}, the user's mood was '{mood}'."  
+        
         super().__init__(
-            instructions="""You are a friendly and enthusiastic barista at Starbucks. The user is interacting with you via voice to place their coffee order.
+            instructions=f"""You are a supportive Health & Wellness Voice Companion. The user is interacting with you via voice for their daily check-in.
 
-Your goal is to collect a complete coffee order with: drink type, size, milk preference, customer name, and optionally extras.
+Your role is to:
+1. Be warm, empathetic, and non-judgmental
+2. Ask about their current mood and energy level
+3. Inquire about their intentions/objectives for the day (1-3 things)
+4. Offer simple, realistic, and actionable advice (no medical claims or diagnosis)
+5. Recap the conversation and confirm understanding
 
-Ask one question at a time naturally. Once you have drink type, size, milk, and customer name, use the save_order tool to finalize the order.
-
-Keep responses concise and natural, without complex formatting, emojis, or asterisks.""",
+IMPORTANT GUIDELINES:
+- Ask ONE question at a time naturally
+- Keep responses concise and conversational
+- No complex formatting, emojis, or asterisks
+- Suggestions should be small, practical, and grounded (e.g., "take a short walk", "break it into smaller steps")
+- Always acknowledge previous check-ins when relevant
+- Once you have mood, energy level, and objectives, use the save_checkin tool{context_note}""",
         )
-        self.order = order
+        self.wellness_log = wellness_log= wellness_log
 
     @function_tool
-    async def save_order(
+    async def save_checkin(
         self,
         context: RunContext,
-        drink_type: Annotated[str, Field(description="Type of coffee drink")],
-        size: Annotated[str, Field(description="Size of the drink")],
-        milk: Annotated[str, Field(description="Milk preference")],
-        customer_name: Annotated[str, Field(description="Customer's name")],
-        extras: Annotated[list[str], Field(description="List of extras")] = [],
+        mood: Annotated[str, Field(description="User's current mood or emotional state")],
+        energy_level: Annotated[str, Field(description="User's energy level (e.g., high, medium, low)")],
+        objectives: Annotated[list[str], Field(description="List of 1-3 intentions or goals for the day")],
+        stressors: Annotated[str, Field(description="Any current stressors or concerns")] = "None mentioned",
     ):
-        """Save the completed coffee order to a JSON file.
+        """Save the daily wellness check-in to wellness_log.json.
         
         Args:
-            drink_type: Type of coffee
-            size: Size of drink
-            milk: Milk preference
-            customer_name: Customer name
-            extras: Optional extras
+            mood: Current mood/emotional state
+            energy_level: Energy level
+            objectives: Daily intentions/goals (1-3 items)
+            stressors: Current stressors (optional)
         """
-        self.order.drinkType = drink_type
-        self.order.size = size
-        self.order.milk = milk
-        self.order.extras = extras
-        self.order.name = customer_name
+        entry = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "mood": mood,
+            "energy_level": energy_level,
+            "objectives": objectives,
+            "stressors": stressors,
+            "timestamp": datetime.now().isoformat()
+        }
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"order_{customer_name}_{timestamp}.json"
+        self.wellness_log.save_checkin(entry)
         
-        with open(filename, 'w') as f:
-            json.dump(asdict(self.order), f, indent=2)
+        logger.info(f"Wellness check-in saved: {entry}")
         
-        logger.info(f"Order saved to {filename}")
-        
-        return f"Perfect! Your {size} {drink_type} with {milk} is ready for {customer_name}. Order saved!"
+        # Create a natural recap
+        objectives_text = ", ".join(objectives) if objectives else "no specific objectives"
+        return f"Great! I've recorded your check-in. Today you're feeling {mood} with {energy_level} energy, and your main focus is: {objectives_text}. Take care of yourself!"
 
 
 def prewarm(proc: JobProcess):
@@ -98,8 +132,8 @@ async def entrypoint(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Initialize coffee order state
-    coffee_order = CoffeeOrder()
+    # Initialize wellness log
+    wellness_log = WellnessLog()
 
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
@@ -163,7 +197,7 @@ async def entrypoint(ctx: JobContext):
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(order=coffee_order),
+        agent=Assistant(wellness_log=wellness_log),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             # For telephony applications, use `BVCTelephony` for best results
