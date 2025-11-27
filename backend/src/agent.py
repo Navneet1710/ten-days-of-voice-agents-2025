@@ -1,5 +1,6 @@
 import logging
 import json
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 
@@ -25,126 +26,123 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Load company FAQ data
-FAQ_FILE = Path("shared-data/day5_razorpay_faq.json")
-LEADS_DIR = Path("shared-data/leads")
-LEADS_DIR.mkdir(exist_ok=True)
+# Database path
+DB_PATH = Path("shared-data/fraud_cases.db")
 
-def load_company_data():
-    """Load company info, FAQs, and pricing from JSON file"""
-    try:
-        with open(FAQ_FILE, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading company data: {e}")
-        return {"company_info": {}, "products": [], "pricing": {}, "faqs": []}
-
-COMPANY_DATA = load_company_data()
-
-# Lead tracking
-class LeadTracker:
-    """Track and manage lead information"""
+# Fraud case management
+class FraudCaseManager:
+    """Manage fraud case data from SQLite database"""
     
     def __init__(self):
-        self.data = {
-            "name": None,
-            "company": None,
-            "email": None,
-            "role": None,
-            "use_case": None,
-            "team_size": None,
-            "timeline": None,
-            "timestamp": datetime.now().isoformat(),
-            "questions_asked": []
-        }
+        self.current_case = None
+        self.user_verified = False
     
-    def update_field(self, field: str, value: str):
-        """Update a lead field"""
-        if field in self.data:
-            self.data[field] = value
-            logger.info(f"Updated lead field {field}: {value}")
+    def load_case_by_username(self, username: str):
+        """Load fraud case from database by username"""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, userName, securityIdentifier, cardEnding, case_status,
+                       transactionName, transactionAmount, transactionTime, 
+                       transactionCategory, transactionSource, transactionLocation,
+                       securityQuestion, securityAnswer
+                FROM fraud_cases 
+                WHERE LOWER(userName) = LOWER(?) AND case_status = 'pending_review'
+                LIMIT 1
+            """, (username,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                self.current_case = {
+                    "id": row[0],
+                    "userName": row[1],
+                    "securityIdentifier": row[2],
+                    "cardEnding": row[3],
+                    "case_status": row[4],
+                    "transactionName": row[5],
+                    "transactionAmount": row[6],
+                    "transactionTime": row[7],
+                    "transactionCategory": row[8],
+                    "transactionSource": row[9],
+                    "transactionLocation": row[10],
+                    "securityQuestion": row[11],
+                    "securityAnswer": row[12]
+                }
+                logger.info(f"Loaded fraud case for {username}: ID {self.current_case['id']}")
+                return True
+            else:
+                logger.warning(f"No pending fraud case found for username: {username}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error loading fraud case: {e}")
+            return False
     
-    def add_question(self, question: str):
-        """Track questions asked during the conversation"""
-        if question not in self.data["questions_asked"]:
-            self.data["questions_asked"].append(question)
-    
-    def get_missing_fields(self):
-        """Return list of fields that haven't been collected"""
-        return [k for k, v in self.data.items() 
-                if k not in ["timestamp", "questions_asked"] and v is None]
-    
-    def is_complete(self):
-        """Check if all required fields are collected"""
-        return len(self.get_missing_fields()) == 0
-    
-    def save_to_file(self):
-        """Save lead data to JSON file"""
-        name = self.data.get("name", "unknown").replace(" ", "_").lower()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = LEADS_DIR / f"lead_{name}_{timestamp}.json"
+    def update_case_status(self, status: str, outcome_note: str):
+        """Update fraud case status in database"""
+        if not self.current_case:
+            logger.error("No current case to update")
+            return False
         
         try:
-            with open(filename, "w") as f:
-                json.dump(self.data, f, indent=2)
-            logger.info(f"Lead saved to {filename}")
-            return str(filename)
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE fraud_cases 
+                SET case_status = ?, outcome_note = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (status, outcome_note, self.current_case["id"]))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Updated case ID {self.current_case['id']}: {status} - {outcome_note}")
+            return True
+            
         except Exception as e:
-            logger.error(f"Error saving lead: {e}")
-            return None
+            logger.error(f"Error updating fraud case: {e}")
+            return False
 
 
-
-class SDRAgent(Agent):
-    """Sales Development Representative for Razorpay - answers FAQs and captures leads"""
+class FraudAgent(Agent):
+    """Fraud Detection Agent for HDFC Bank - handles suspicious transaction verification"""
     
     def __init__(self) -> None:
-        company_name = COMPANY_DATA.get("company_info", {}).get("name", "our company")
-        company_tagline = COMPANY_DATA.get("company_info", {}).get("tagline", "")
-        
-        products_list = "\n".join([f"- {p['name']}: {p['description']}" for p in COMPANY_DATA.get("products", [])])
-        
         super().__init__(
-            instructions=f"""You are a warm and helpful Sales Development Representative for {company_name} - {company_tagline}.
+            instructions="""You are a professional and calm Fraud Detection Representative from HDFC Bank's Security Department.
 
-Your role:
-1. GREET warmly and introduce yourself as an SDR from {company_name}
-2. ASK what brought them here and what they're working on
-3. UNDERSTAND their needs and business context
-4. ANSWER questions about our products, pricing, and features using the search_faq tool
-5. NATURALLY COLLECT lead information during the conversation:
-   - Name
-   - Company name
-   - Email address
-   - Role/job title
-   - Use case (what they want to build/solve)
-   - Team size
-   - Timeline (when they're looking to implement)
-6. DETECT when they're done (phrases like "That's all", "I'm done", "Thanks, goodbye")
-7. SUMMARIZE the conversation and collected information before ending
+Your role is to help customers verify suspicious transactions on their account.
 
-Our products:
-{products_list}
+CALL FLOW:
+1. INTRODUCTION: Greet warmly and introduce yourself as calling from HDFC Bank Fraud Detection Team
+2. ASK FOR NAME: Ask "May I know your name please?" to identify the customer
+3. LOAD CASE: Use get_fraud_case tool with their name to load their pending fraud case
+4. VERIFICATION: Ask the security question from the loaded case using ask_security_question tool
+5. VERIFY ANSWER: Use verify_security_answer tool to check if answer is correct
+6. IF VERIFIED:
+   - Read transaction details using read_transaction_details tool
+   - Ask: "Did you make this transaction? Please say yes or no."
+   - Use confirm_transaction tool with their yes/no response
+7. IF NOT VERIFIED:
+   - Politely say you cannot proceed without proper verification
+   - Use end_verification_failed tool to close the case
+8. CLOSING: Thank them and confirm what action was taken
 
-CRITICAL GUIDELINES FOR ANSWERING QUESTIONS:
-- ALWAYS use search_faq tool for ANY product, pricing, feature, or company questions
-- The search_faq tool is smart - it will find relevant answers even if the query doesn't match exactly
-- Pass the user's question directly to search_faq - don't try to answer from memory
-- After getting results from search_faq, read the answer naturally and conversationally
-- If the user asks follow-up questions, use search_faq again with the follow-up query
-- NEVER say "I cannot fetch" or "I don't have information" without calling search_faq first
+IMPORTANT GUIDELINES:
+- Speak in a calm, professional, and reassuring tone
+- NEVER ask for full card numbers, PINs, CVV, or passwords
+- Only use the security question from the database for verification
+- Keep responses concise and clear
+- Use the function tools in the correct sequence
+- Be empathetic - customers may be worried about fraud
+- Always confirm the action taken before ending
 
-LEAD COLLECTION TIPS:
-- Be conversational and natural - don't make it feel like a form
-- Use the update_lead_* tools to save information as you learn it
-- Weave lead questions into the natural flow of conversation
-- Focus on understanding their needs first, then suggesting solutions
-
-END-OF-CALL HANDLING:
-- When you detect they're done (goodbye phrases), use end_call tool to summarize
-- The summary should be warm, concise, and confirm what you learned
-
-Be helpful, professional, and consultative!
+You are here to protect customers, be professional and trustworthy!
 """,
             tts=murf.TTS(
                 voice="en-IN-priya",
@@ -152,225 +150,155 @@ Be helpful, professional, and consultative!
                 tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=8)
             )
         )
-        self.lead_tracker = LeadTracker()
+        self.case_manager = FraudCaseManager()
     
     async def on_enter(self) -> None:
-        """Called when agent starts"""
-        company_name = COMPANY_DATA.get("company_info", {}).get("name", "our company")
+        """Called when fraud call starts"""
         await self.session.generate_reply(
-            instructions=f"Greet the visitor warmly. Introduce yourself as an SDR from {company_name}. Ask what brought them here today and what they're working on."
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting including emojis, asterisks, or other weird symbols.
-            You are curious, friendly, and have a sense of humor.""",
+            instructions="Greet the customer warmly. Introduce yourself as calling from HDFC Bank's Fraud Detection Team regarding a suspicious transaction on their account. Ask for their name to proceed."
         )
     
     @function_tool
-    async def search_faq(self, context: RunContext, query: str):
-        """Search FAQs for relevant information about products, pricing, or features
+    async def get_fraud_case(self, context: RunContext, username: str):
+        """Load pending fraud case from database for the given username
         
         Args:
-            query: The question or topic to search for (e.g., "pricing", "payment gateway", "settlement time")
+            username: Customer's full name to look up their fraud case
         """
-        query_lower = query.lower()
-        faqs = COMPANY_DATA.get("faqs", [])
+        success = self.case_manager.load_case_by_username(username)
         
-        # Extract keywords from query (split and clean)
-        query_words = set(word.strip("?,.:;!") for word in query_lower.split() if len(word) > 3)
-        
-        # Score-based search - find most relevant FAQs
-        scored_matches = []
-        for faq in faqs:
-            question = faq.get("question", "").lower()
-            answer = faq.get("answer", "").lower()
-            category = faq.get("category", "")
+        if success:
+            case = self.case_manager.current_case
+            return f"""Found fraud case for {case['userName']}.
             
-            score = 0
-            # Exact phrase match gets highest score
-            if query_lower in question:
-                score += 10
-            if query_lower in answer:
-                score += 5
+Case ID: {case['id']}
+Card ending: **** {case['cardEnding']}
+Status: Pending review
+
+I need to verify your identity before proceeding. I'll ask you a security question."""
+        else:
+            return f"I'm sorry, I couldn't find any pending fraud cases for {username}. Please make sure you've provided your full name as registered with the bank."
+    
+    @function_tool
+    async def ask_security_question(self, context: RunContext):
+        """Get the security question for verification
+        
+        No arguments needed - uses the currently loaded fraud case
+        """
+        if not self.case_manager.current_case:
+            return "No fraud case is currently loaded. Please provide your name first."
+        
+        question = self.case_manager.current_case.get("securityQuestion")
+        return f"For verification purposes: {question}"
+    
+    @function_tool
+    async def verify_security_answer(self, context: RunContext, user_answer: str):
+        """Verify the user's answer to the security question
+        
+        Args:
+            user_answer: The user's response to the security question
+        """
+        if not self.case_manager.current_case:
+            return "No fraud case is currently loaded."
+        
+        correct_answer = self.case_manager.current_case.get("securityAnswer", "").lower().strip()
+        user_answer_cleaned = user_answer.lower().strip()
+        
+        if correct_answer == user_answer_cleaned:
+            self.case_manager.user_verified = True
+            return "Thank you, your identity has been verified. Let me now share the details of the suspicious transaction."
+        else:
+            self.case_manager.user_verified = False
+            return "I'm sorry, that answer doesn't match our records. For security reasons, I cannot proceed without proper verification."
+    
+    @function_tool
+    async def read_transaction_details(self, context: RunContext):
+        """Read the suspicious transaction details to the customer
+        
+        No arguments needed - uses the currently loaded fraud case
+        """
+        if not self.case_manager.user_verified:
+            return "Please complete verification first before I can share transaction details."
+        
+        case = self.case_manager.current_case
+        amount_formatted = f"₹{float(case['transactionAmount']):,.2f}"
+        
+        return f"""Here are the details of the suspicious transaction:
+
+Merchant: {case['transactionName']}
+Amount: {amount_formatted}
+Card ending: **** {case['cardEnding']}
+Time: {case['transactionTime']}
+Location: {case['transactionLocation']}
+Source: {case['transactionSource']}
+Category: {case['transactionCategory']}
+
+Did you make this transaction? Please say yes or no."""
+    
+    @function_tool
+    async def confirm_transaction(self, context: RunContext, user_confirmed: str):
+        """Process the user's confirmation whether they made the transaction
+        
+        Args:
+            user_confirmed: User's response - should contain "yes" or "no"
+        """
+        if not self.case_manager.user_verified:
+            return "Please complete verification first."
+        
+        if not self.case_manager.current_case:
+            return "No fraud case is currently loaded."
+        
+        user_response = user_confirmed.lower().strip()
+        case = self.case_manager.current_case
+        amount_formatted = f"₹{float(case['transactionAmount']):,.2f}"
+        
+        if "yes" in user_response:
+            # Customer confirms - mark as safe
+            outcome = f"Customer confirmed transaction as legitimate on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            self.case_manager.update_case_status("confirmed_safe", outcome)
             
-            # Word-based matching
-            question_words = set(question.split())
-            answer_words = set(answer.split())
+            return f"""Thank you for confirming. I've marked this transaction as safe in our system.
+
+Transaction to {case['transactionName']} for {amount_formatted} is now cleared.
+
+Your card ending in {case['cardEnding']} remains active. 
+
+Is there anything else I can help you with regarding this case?"""
+        
+        elif "no" in user_response:
+            # Customer denies - mark as fraudulent
+            outcome = f"Customer denied making this transaction. Reported as fraud on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            self.case_manager.update_case_status("confirmed_fraud", outcome)
             
-            for word in query_words:
-                if word in question_words:
-                    score += 3
-                if word in answer_words:
-                    score += 1
-            
-            if score > 0:
-                scored_matches.append({
-                    "question": faq.get("question"),
-                    "answer": faq.get("answer"),
-                    "category": category,
-                    "score": score
-                })
+            return f"""Thank you for informing us. I've immediately taken the following actions:
+
+1. Marked this transaction to {case['transactionName']} for {amount_formatted} as fraudulent
+2. Blocked your card ending in {case['cardEnding']} to prevent further unauthorized charges
+3. Initiated a dispute with the merchant
+4. A replacement card will be sent to your registered address within 5-7 business days
+
+You will NOT be charged for this fraudulent transaction.
+
+Our fraud investigation team will contact you within 24 hours. Is there anything else you need assistance with?"""
         
-        # Sort by score (highest first)
-        scored_matches.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Track the question
-        self.lead_tracker.add_question(query)
-        
-        if scored_matches:
-            # Return top 3 most relevant matches
-            top_matches = scored_matches[:3]
-            result = f"Here's what I found:\n\n"
-            for i, match in enumerate(top_matches, 1):
-                result += f"{i}. Q: {match['question']}\n   A: {match['answer']}\n\n"
-            return result
-        
-        # If no FAQ matches, search in products and pricing
-        products = COMPANY_DATA.get("products", [])
-        for product in products:
-            product_name = product.get("name", "").lower()
-            product_desc = product.get("description", "").lower()
-            
-            # Check if any query word matches product
-            if any(word in product_name or word in product_desc for word in query_words):
-                features = product.get("features", [])
-                feature_text = "\nKey Features:\n" + "\n".join(f"- {f}" for f in features) if features else ""
-                return f"About {product.get('name')}:\n{product.get('description')}{feature_text}"
-        
-        # Search in pricing if query contains price-related keywords
-        price_keywords = {"price", "pricing", "cost", "fee", "charge", "rate", "payment"}
-        if any(keyword in query_lower for keyword in price_keywords):
-            pricing = COMPANY_DATA.get("pricing", {})
-            gateway_pricing = pricing.get("payment_gateway", {})
-            if gateway_pricing:
-                return f"""Here's our pricing information:
-
-Payment Gateway:
-- Domestic cards: {gateway_pricing.get('domestic_cards', 'N/A')}
-- International cards: {gateway_pricing.get('international_cards', 'N/A')}
-- UPI: {gateway_pricing.get('upi', 'N/A')}
-- Netbanking: {gateway_pricing.get('netbanking', 'N/A')}
-- Wallets: {gateway_pricing.get('wallets', 'N/A')}
-
-No setup fee or annual fee!
-
-Payment Links and Pages follow the same pricing as the gateway."""
-        
-        # Last resort - return general company info
-        company_info = COMPANY_DATA.get("company_info", {})
-        return f"""I'd be happy to help! Let me tell you about {company_info.get('name', 'us')}:
-
-{company_info.get('description', '')}
-
-We serve: {company_info.get('target_customers', 'businesses across India')}
-
-Feel free to ask me about:
-- Our products (Payment Gateway, Payment Links, Subscriptions, etc.)
-- Pricing and fees
-- Technical integration
-- Settlements and payouts
-- Security and compliance
-
-What would you like to know more about?"""
+        else:
+            return "I didn't quite catch that. Did you make this transaction? Please say yes or no."
     
     @function_tool
-    async def update_lead_name(self, context: RunContext, name: str):
-        """Save the lead's name
+    async def end_verification_failed(self, context: RunContext):
+        """End the call when verification fails
         
-        Args:
-            name: The person's full name
+        No arguments needed
         """
-        self.lead_tracker.update_field("name", name)
-        return f"Got it, {name}! Nice to meet you."
-    
-    @function_tool
-    async def update_lead_company(self, context: RunContext, company: str):
-        """Save the lead's company name
+        if self.case_manager.current_case:
+            outcome = f"Verification failed on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Customer could not answer security question correctly."
+            self.case_manager.update_case_status("verification_failed", outcome)
         
-        Args:
-            company: The company name
-        """
-        self.lead_tracker.update_field("company", company)
-        return f"Great, noted that you're with {company}."
-    
-    @function_tool
-    async def update_lead_email(self, context: RunContext, email: str):
-        """Save the lead's email address
-        
-        Args:
-            email: Email address
-        """
-        self.lead_tracker.update_field("email", email)
-        return f"Perfect, I've got {email} on file."
-    
-    @function_tool
-    async def update_lead_role(self, context: RunContext, role: str):
-        """Save the lead's job title/role
-        
-        Args:
-            role: Job title or role
-        """
-        self.lead_tracker.update_field("role", role)
-        return f"Understood, you're a {role}."
-    
-    @function_tool
-    async def update_lead_use_case(self, context: RunContext, use_case: str):
-        """Save what the lead wants to build or solve
-        
-        Args:
-            use_case: Description of their use case or problem
-        """
-        self.lead_tracker.update_field("use_case", use_case)
-        return f"Got it, you want to {use_case}. That makes sense."
-    
-    @function_tool
-    async def update_lead_team_size(self, context: RunContext, team_size: str):
-        """Save the team size
-        
-        Args:
-            team_size: Number of people on the team (e.g., "5-10", "just me", "50+")
-        """
-        self.lead_tracker.update_field("team_size", team_size)
-        return f"Noted, team size is {team_size}."
-    
-    @function_tool
-    async def update_lead_timeline(self, context: RunContext, timeline: str):
-        """Save when they're looking to implement
-        
-        Args:
-            timeline: Implementation timeline (e.g., "next month", "Q2", "ASAP")
-        """
-        self.lead_tracker.update_field("timeline", timeline)
-        return f"Perfect, looking at {timeline} for implementation."
-    
-    @function_tool
-    async def end_call(self, context: RunContext):
-        """End the call and provide a summary - use when customer says goodbye or indicates they're done
-        
-        No arguments needed - just call when the conversation is wrapping up
-        """
-        # Save the lead data
-        filename = self.lead_tracker.save_to_file()
-        
-        # Generate summary
-        lead = self.lead_tracker.data
-        name = lead.get("name", "there")
-        company = lead.get("company", "your company")
-        use_case = lead.get("use_case", "your needs")
-        timeline = lead.get("timeline", "soon")
-        
-        summary = f"""Thank you for your time, {name}! Let me quickly summarize:
+        return """For your security, I cannot proceed without proper verification.
 
-- You're with {company}
-- Looking to {use_case}
-- Timeline: {timeline}
+Please visit your nearest HDFC Bank branch with a valid government ID to resolve this fraud alert, or call our customer care at 1800-267-3333 for further assistance.
 
-I've captured all your information and our team will reach out to {lead.get('email', 'you')} shortly to help you get started. 
-
-Feel free to reach out anytime if you have more questions. Have a great day!"""
-        
-        logger.info(f"Call ended. Lead saved to: {filename}")
-        return summary
-
+Thank you for your time. Goodbye."""
 
 
 
@@ -412,9 +340,9 @@ async def entrypoint(ctx: JobContext):
     
     ctx.add_shutdown_callback(log_usage)
     
-    # Start with SDR agent
+    # Start with Fraud Agent
     await session.start(
-        agent=SDRAgent(),
+        agent=FraudAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
