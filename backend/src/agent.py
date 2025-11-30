@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import Annotated
+import random
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -27,364 +28,282 @@ logger.setLevel(logging.INFO)
 
 load_dotenv(".env.local")
 
-# Product catalog (ACP-inspired structure)
-PRODUCTS = [
-    {
-        "id": "mug-001",
-        "name": "Classic White Coffee Mug",
-        "description": "Elegant stoneware coffee mug, 350ml capacity",
-        "price": 450,
-        "currency": "INR",
-        "category": "mug",
-        "color": "white",
-        "material": "stoneware"
-    },
-    {
-        "id": "mug-002",
-        "name": "Blue Ceramic Mug",
-        "description": "Handcrafted ceramic mug with ocean blue glaze",
-        "price": 550,
-        "currency": "INR",
-        "category": "mug",
-        "color": "blue",
-        "material": "ceramic"
-    },
-    {
-        "id": "tshirt-001",
-        "name": "Cotton T-Shirt Black",
-        "description": "Premium cotton t-shirt, comfortable fit",
-        "price": 799,
-        "currency": "INR",
-        "category": "tshirt",
-        "color": "black",
-        "sizes": ["S", "M", "L", "XL"]
-    },
-    {
-        "id": "tshirt-002",
-        "name": "Cotton T-Shirt White",
-        "description": "Premium cotton t-shirt, comfortable fit",
-        "price": 699,
-        "currency": "INR",
-        "category": "tshirt",
-        "color": "white",
-        "sizes": ["S", "M", "L", "XL"]
-    },
-    {
-        "id": "hoodie-001",
-        "name": "Black Hoodie Premium",
-        "description": "Warm fleece hoodie with kangaroo pocket",
-        "price": 1899,
-        "currency": "INR",
-        "category": "hoodie",
-        "color": "black",
-        "sizes": ["M", "L", "XL"]
-    },
-    {
-        "id": "hoodie-002",
-        "name": "Grey Hoodie Classic",
-        "description": "Classic grey hoodie with soft interior",
-        "price": 1699,
-        "currency": "INR",
-        "category": "hoodie",
-        "color": "grey",
-        "sizes": ["S", "M", "L", "XL"]
-    },
-    {
-        "id": "bottle-001",
-        "name": "Stainless Steel Water Bottle",
-        "description": "Insulated water bottle, keeps drinks cold for 24 hours",
-        "price": 899,
-        "currency": "INR",
-        "category": "bottle",
-        "color": "silver",
-        "capacity": "750ml"
-    },
-    {
-        "id": "bag-001",
-        "name": "Canvas Tote Bag",
-        "description": "Durable canvas bag perfect for shopping or daily use",
-        "price": 599,
-        "currency": "INR",
-        "category": "bag",
-        "color": "beige",
-        "material": "canvas"
-    },
-    {
-        "id": "notebook-001",
-        "name": "Leather Journal",
-        "description": "Premium leather-bound notebook with 200 pages",
-        "price": 1299,
-        "currency": "INR",
-        "category": "notebook",
-        "color": "brown",
-        "pages": 200
-    },
-    {
-        "id": "cap-001",
-        "name": "Baseball Cap Black",
-        "description": "Adjustable baseball cap with embroidered logo",
-        "price": 499,
-        "currency": "INR",
-        "category": "cap",
-        "color": "black",
-        "adjustable": True
-    }
+# Improv scenarios
+SCENARIOS = [
+    "You are a time-travelling tour guide explaining modern smartphones to someone from the 1800s.",
+    "You are a restaurant waiter who must calmly tell a customer that their order has escaped the kitchen.",
+    "You are a customer trying to return an obviously cursed object to a very skeptical shop owner.",
+    "You are a barista who has to tell a customer that their latte is actually a portal to another dimension.",
+    "You are a tech support agent helping someone who accidentally downloaded their consciousness into their smart fridge.",
+    "You are a yoga instructor teaching a class to aliens who just landed on Earth.",
+    "You are a detective interrogating a suspect who is clearly a time traveler but won't admit it.",
+    "You are a chef on a cooking show where all your ingredients have suddenly become sentient.",
+    "You are a museum tour guide explaining why a very ordinary stapler is actually priceless art.",
+    "You are a driving instructor teaching someone who thinks the car is a spaceship."
 ]
 
-# In-memory order storage
-ORDERS = []
+# Game state storage
+GAME_SESSIONS = {}
 
-# Orders file path
-ORDERS_DIR = Path(__file__).parent.parent / "shared-data" / "orders"
-ORDERS_DIR.mkdir(parents=True, exist_ok=True)
-ORDERS_FILE = ORDERS_DIR / "orders.json"
+# Session storage directory
+SESSIONS_DIR = Path(__file__).parent.parent / "shared-data" / "improv_sessions"
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Load existing orders from file
-if ORDERS_FILE.exists():
+
+def get_game_state(session_id: str) -> dict:
+    """Get or create game state for a session"""
+    if session_id not in GAME_SESSIONS:
+        GAME_SESSIONS[session_id] = {
+            "player_name": None,
+            "current_round": 0,
+            "max_rounds": 3,
+            "rounds": [],
+            "phase": "intro",
+            "current_scenario": None,
+            "session_start": datetime.now().isoformat()
+        }
+    return GAME_SESSIONS[session_id]
+
+
+def save_session(session_id: str):
+    """Save session to file"""
     try:
-        with open(ORDERS_FILE, "r", encoding="utf-8") as f:
-            ORDERS = json.load(f)
-        logger.info(f"Loaded {len(ORDERS)} existing orders from {ORDERS_FILE}")
+        state = GAME_SESSIONS.get(session_id)
+        if state:
+            filepath = SESSIONS_DIR / f"session_{session_id}.json"
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+            logger.info(f"Session {session_id} saved to {filepath}")
     except Exception as e:
-        logger.error(f"Error loading orders: {e}")
-        ORDERS = []
-
-
-# Function tools - all parameters are REQUIRED (no defaults)
-# We handle empty values inside the function
-@function_tool()
-async def list_products(
-    context: RunContext,
-    category: Annotated[str, "Product category: mug, tshirt, hoodie, bottle, bag, notebook, cap, or 'all' for everything"],
-    max_price: Annotated[int, "Maximum price in INR, or 0 for no limit"],
-    color: Annotated[str, "Color filter: white, blue, black, grey, silver, beige, brown, or 'all' for any color"],
-) -> str:
-    """
-    Browse the product catalog with filters.
-    Use 'all' for category or color to show everything.
-    Use 0 for max_price to show all prices.
-    """
-    
-    logger.info(f"=== list_products called ===")
-    logger.info(f"Parameters: category='{category}', max_price={max_price}, color='{color}'")
-    
-    try:
-        filtered = list(PRODUCTS)
-        
-        # Apply filters - treat "all" or empty as no filter
-        if category and category.lower().strip() not in ["all", ""]:
-            cat_lower = category.lower().strip()
-            filtered = [p for p in filtered if p.get("category", "").lower() == cat_lower]
-            logger.info(f"After category filter '{cat_lower}': {len(filtered)} products")
-        
-        if max_price and max_price > 0:
-            filtered = [p for p in filtered if p.get("price", 0) <= max_price]
-            logger.info(f"After price filter <={max_price}: {len(filtered)} products")
-        
-        if color and color.lower().strip() not in ["all", ""]:
-            col_lower = color.lower().strip()
-            filtered = [p for p in filtered if p.get("color", "").lower() == col_lower]
-            logger.info(f"After color filter '{col_lower}': {len(filtered)} products")
-        
-        if not filtered:
-            return "No products found matching your criteria. Try different filters."
-        
-        # Format response
-        result = f"I found {len(filtered)} product(s):\n\n"
-        for i, product in enumerate(filtered, 1):
-            result += f"{i}. {product['name']} (ID: {product['id']})\n"
-            result += f"   Price: ₹{product['price']}\n"
-            result += f"   Color: {product.get('color', 'N/A')}\n"
-            if 'sizes' in product:
-                result += f"   Sizes: {', '.join(product['sizes'])}\n"
-            result += f"   {product['description']}\n\n"
-        
-        logger.info(f"Returning {len(filtered)} products successfully")
-        return result.strip()
-        
-    except Exception as e:
-        logger.error(f"ERROR in list_products: {str(e)}", exc_info=True)
-        return f"Error browsing products: {str(e)}"
+        logger.error(f"Error saving session: {e}")
 
 
 @function_tool()
-async def create_order(
+async def start_game(
     context: RunContext,
-    product_id: Annotated[str, "Product ID (e.g., hoodie-001, mug-002)"],
-    size: Annotated[str, "Size for clothing (S, M, L, XL), or 'none' for non-clothing items"],
-    quantity: Annotated[int, "Quantity to order"],
-    customer_name: Annotated[str, "Customer's name"],
+    player_name: Annotated[str, "The player's name"]
 ) -> str:
-    """
-    Create an order for a product.
-    For clothing (hoodies, tshirts), size is required (S, M, L, XL).
-    For other items, use 'none' for size.
-    """
+    """Start the improv game with player name"""
     
-    logger.info(f"=== create_order called ===")
-    logger.info(f"Parameters: product_id='{product_id}', size='{size}', quantity={quantity}, customer_name='{customer_name}'")
+    logger.info(f"=== start_game called ===")
+    logger.info(f"Player name: {player_name}")
     
     try:
-        # Find product
-        product = None
-        for p in PRODUCTS:
-            if p["id"].lower() == product_id.lower().strip():
-                product = p
-                break
+        session_id = context.agent_session.session_id
+        state = get_game_state(session_id)
         
-        if not product:
-            logger.error(f"Product not found: {product_id}")
-            return f"Product ID '{product_id}' not found. Please browse the catalog first with list_products."
+        state["player_name"] = player_name
+        state["phase"] = "ready_for_scenario"
         
-        # Validate size for clothing
-        actual_size = None
-        if 'sizes' in product:
-            if not size or size.lower() == "none":
-                return f"Size is required for {product['name']}. Available sizes: {', '.join(product['sizes'])}"
-            
-            size_upper = size.upper().strip()
-            if size_upper not in product['sizes']:
-                return f"Size {size} is not available. Available sizes: {', '.join(product['sizes'])}"
-            actual_size = size_upper
+        save_session(session_id)
         
-        # Calculate total
-        unit_price = product["price"]
-        total = unit_price * quantity
+        return f"Great to have you here, {player_name}! Let me set up your first improv scenario."
         
-        # Generate order ID
-        order_id = f"ORD{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    except Exception as e:
+        logger.error(f"ERROR in start_game: {str(e)}", exc_info=True)
+        return f"Error starting game: {str(e)}"
+
+
+@function_tool()
+async def next_scenario(context: RunContext) -> str:
+    """Get the next improv scenario for the player"""
+    
+    logger.info(f"=== next_scenario called ===")
+    
+    try:
+        session_id = context.agent_session.session_id
+        state = get_game_state(session_id)
         
-        # Create order object
-        order = {
-            "id": order_id,
-            "status": "CONFIRMED",
-            "created_at": datetime.now().isoformat(),
-            "customer_name": customer_name,
-            "line_items": [
-                {
-                    "product_id": product["id"],
-                    "product_name": product["name"],
-                    "quantity": quantity,
-                    "unit_amount": unit_price,
-                    "size": actual_size,
-                    "subtotal": total
-                }
-            ],
-            "total": total,
-            "currency": product["currency"]
+        if state["current_round"] >= state["max_rounds"]:
+            return "game_complete"
+        
+        # Select random unused scenario
+        used_scenarios = [r.get("scenario") for r in state["rounds"]]
+        available = [s for s in SCENARIOS if s not in used_scenarios]
+        
+        if not available:
+            available = SCENARIOS
+        
+        scenario = random.choice(available)
+        
+        state["current_round"] += 1
+        state["current_scenario"] = scenario
+        state["phase"] = "awaiting_improv"
+        
+        save_session(session_id)
+        
+        round_num = state["current_round"]
+        return f"Round {round_num} of {state['max_rounds']}: {scenario} Go ahead and act it out!"
+        
+    except Exception as e:
+        logger.error(f"ERROR in next_scenario: {str(e)}", exc_info=True)
+        return f"Error getting scenario: {str(e)}"
+
+
+@function_tool()
+async def scene_complete(
+    context: RunContext,
+    performance_summary: Annotated[str, "Brief summary of what the player did in their improv"]
+) -> str:
+    """Mark scene as complete and generate host reaction"""
+    
+    logger.info(f"=== scene_complete called ===")
+    logger.info(f"Performance summary: {performance_summary}")
+    
+    try:
+        session_id = context.agent_session.session_id
+        state = get_game_state(session_id)
+        
+        # Generate reaction tone (varied)
+        reaction_styles = [
+            "positive_enthusiastic",
+            "positive_mild", 
+            "critical_constructive",
+            "mixed",
+            "surprised"
+        ]
+        reaction_style = random.choice(reaction_styles)
+        
+        # Store round data
+        round_data = {
+            "round_number": state["current_round"],
+            "scenario": state["current_scenario"],
+            "performance_summary": performance_summary,
+            "reaction_style": reaction_style
         }
         
-        # Save to memory
-        ORDERS.append(order)
+        state["rounds"].append(round_data)
+        state["phase"] = "reacting"
         
-        # Save to file
-        try:
-            with open(ORDERS_FILE, "w", encoding="utf-8") as f:
-                json.dump(ORDERS, f, indent=2, ensure_ascii=False)
-            logger.info(f"Order {order_id} saved to {ORDERS_FILE}")
-        except Exception as e:
-            logger.error(f"Error saving order: {e}")
+        save_session(session_id)
         
-        # Format confirmation
-        confirmation = f"Order confirmed!\n\n"
-        confirmation += f"Order ID: {order_id}\n"
-        confirmation += f"Customer: {customer_name}\n"
-        confirmation += f"Product: {product['name']}\n"
-        confirmation += f"Quantity: {quantity}\n"
-        if actual_size:
-            confirmation += f"Size: {actual_size}\n"
-        confirmation += f"Total: ₹{total}\n"
-        confirmation += f"\nYour order will be processed shortly. Thank you for shopping with us!"
-        
-        logger.info(f"Order {order_id} created successfully")
-        return confirmation
+        # Return signal for host to generate appropriate reaction
+        return f"reaction_needed|{reaction_style}|{performance_summary}"
         
     except Exception as e:
-        logger.error(f"ERROR in create_order: {str(e)}", exc_info=True)
-        return f"Error creating order: {str(e)}"
+        logger.error(f"ERROR in scene_complete: {str(e)}", exc_info=True)
+        return f"Error completing scene: {str(e)}"
 
 
 @function_tool()
-async def view_last_order(context: RunContext) -> str:
-    """View the most recent order details"""
+async def end_game(context: RunContext) -> str:
+    """End the game early if player wants to stop"""
     
-    logger.info(f"=== view_last_order called ===")
+    logger.info(f"=== end_game called ===")
     
     try:
-        if not ORDERS:
-            return "You haven't placed any orders yet. Would you like to browse our products?"
+        session_id = context.agent_session.session_id
+        state = get_game_state(session_id)
         
-        order = ORDERS[-1]
+        state["phase"] = "done"
+        save_session(session_id)
         
-        result = f"Last Order:\n\n"
-        result += f"Order ID: {order['id']}\n"
-        result += f"Status: {order['status']}\n"
-        result += f"Customer: {order['customer_name']}\n\n"
-        result += "Items:\n"
-        
-        for item in order['line_items']:
-            result += f"- {item['product_name']}\n"
-            result += f"  Quantity: {item['quantity']}\n"
-            if item.get('size'):
-                result += f"  Size: {item['size']}\n"
-            result += f"  Price: ₹{item['subtotal']}\n"
-        
-        result += f"\nTotal: ₹{order['total']} {order['currency']}"
-        
-        logger.info("Last order retrieved successfully")
-        return result
+        return "early_exit_confirmed"
         
     except Exception as e:
-        logger.error(f"ERROR in view_last_order: {str(e)}", exc_info=True)
-        return f"Error viewing order: {str(e)}"
+        logger.error(f"ERROR in end_game: {str(e)}", exc_info=True)
+        return f"Error ending game: {str(e)}"
 
 
-# E-commerce Agent class
-class EcommerceAgent(Agent):
-    """Voice Shopping Assistant"""
+@function_tool()
+async def get_game_summary(context: RunContext) -> str:
+    """Get summary of all rounds for closing"""
+    
+    logger.info(f"=== get_game_summary called ===")
+    
+    try:
+        session_id = context.agent_session.session_id
+        state = get_game_state(session_id)
+        
+        if not state["rounds"]:
+            return "No rounds completed yet."
+        
+        summary = f"Game Summary for {state['player_name']}:\n\n"
+        
+        for i, round_data in enumerate(state["rounds"], 1):
+            summary += f"Round {i}: {round_data['scenario'][:50]}...\n"
+            summary += f"Style: {round_data['reaction_style']}\n\n"
+        
+        summary += f"Total rounds: {len(state['rounds'])}"
+        
+        return summary
+        
+    except Exception as e:
+        logger.error(f"ERROR in get_game_summary: {str(e)}", exc_info=True)
+        return f"Error getting summary: {str(e)}"
+
+
+class ImprovBattleAgent(Agent):
+    """Improv Battle Game Show Host"""
     
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful voice shopping assistant.
+            instructions="""You are the host of a TV improv show called 'Improv Battle'.
+
+YOUR ROLE:
+- High-energy, witty, and clear about rules
+- React realistically to player performances (not always supportive)
+- Mix praise, constructive critique, and light teasing
+- Stay respectful and safe, never abusive
 
 YOUR TOOLS:
-1. list_products(category, max_price, color) - Browse catalog
-2. create_order(product_id, size, quantity, customer_name) - Place order
-3. view_last_order() - Show recent order
+1. start_game(player_name) - Register player and begin
+2. next_scenario() - Get next improv scenario  
+3. scene_complete(performance_summary) - Mark scene done, trigger reaction
+4. get_game_summary() - Get all rounds for closing
+5. end_game() - End early if player wants to stop
 
-IMPORTANT RULES FOR CALLING TOOLS:
+GAME FLOW:
 
-list_products:
-- ALWAYS provide ALL THREE parameters
-- Use "all" for category if showing everything (not a specific category)
-- Use 0 for max_price if no price limit
-- Use "all" for color if showing all colors
+INTRO PHASE:
+- Welcome enthusiastically: "Welcome to IMPROV BATTLE! I'm your host!"
+- Ask for their name
+- When they give name, call start_game(player_name)
+- Explain rules briefly: "You'll get 3 improv scenarios. Act them out, I'll react, then we move on!"
+- Call next_scenario() to begin Round 1
 
-Examples:
-- All products: list_products("all", 0, "all")
-- Hoodies only: list_products("hoodie", 0, "all")
-- Blue items: list_products("all", 0, "blue")
-- Hoodies under 2000: list_products("hoodie", 2000, "all")
+SCENARIO PHASE (repeat 3 times):
+- Announce the scenario clearly
+- Tell them to start improvising
+- LISTEN to their performance actively
+- When they clearly finish (say "end scene", long pause, or ask to move on):
+  * Summarize what they did in 1-2 sentences
+  * Call scene_complete(performance_summary)
+  * The tool returns: "reaction_needed|STYLE|summary"
 
-create_order:
-- ALWAYS provide ALL FOUR parameters
-- For hoodies/tshirts: ask for size first (S, M, L, XL)
-- For other items: use "none" for size
-- Always ask for customer name
+REACTION PHASE:
+- Based on STYLE from scene_complete:
+  * positive_enthusiastic: "That was HILARIOUS! The way you..."
+  * positive_mild: "Nice work, I liked how you..."
+  * critical_constructive: "That felt a bit rushed. You could have..."
+  * mixed: "Interesting choice! The [X] was great but [Y] could be stronger"
+  * surpris: "Wow, I did NOT expect you to..."
 
-Examples:
-- Hoodie: create_order("hoodie-001", "L", 1, "John")
-- Mug: create_order("mug-001", "none", 1, "Jane")
+- Keep reactions SHORT (2-3 sentences max)
+- Be specific about what they did
+- Vary your tone - not always positive!
+- After reacting, if rounds remain, call next_scenario()
 
-WORKFLOW:
-1. Customer asks about products → call list_products
-2. Customer wants to order → get product_id, size (if clothing), name → call create_order
-3. Customer asks about last order → call view_last_order
+CLOSING PHASE (after 3 rounds):
+- Call get_game_summary()
+- Give a character assessment: "You seem to be a [type] improviser"
+- Mention 1-2 specific memorable moments
+- Thank them: "Thanks for playing Improv Battle!"
 
-Keep responses SHORT and friendly (1-2 sentences).
+EARLY EXIT:
+- If they say "stop game", "end show", "I'm done":
+  * Call end_game()
+  * Give brief closing and thank them
 
-Greet the customer and ask how you can help!""",
-            tools=[list_products, create_order, view_last_order]
+RULES:
+- Keep ALL responses SHORT (1-3 sentences) except intro and closing
+- React authentically - sometimes critical, sometimes amazed
+- Never be mean, but honest feedback is good
+- After each reaction, move forward (next scenario or closing)
+- Maximum 3 rounds total
+
+Start by greeting them enthusiastically!""",
+            tools=[start_game, next_scenario, scene_complete, get_game_summary, end_game]
         )
 
 
@@ -397,7 +316,7 @@ async def entrypoint(ctx: JobContext):
     """Main agent entrypoint"""
     
     logger.info("=" * 50)
-    logger.info("Starting E-commerce Agent")
+    logger.info("Starting Improv Battle Agent")
     logger.info("=" * 50)
     
     # Create agent session
@@ -442,7 +361,7 @@ async def entrypoint(ctx: JobContext):
     
     # Start agent
     await session.start(
-        agent=EcommerceAgent(),
+        agent=ImprovBattleAgent(),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
@@ -451,7 +370,7 @@ async def entrypoint(ctx: JobContext):
     
     await ctx.connect()
     
-    logger.info("Agent connected and ready!")
+    logger.info("Improv Battle Agent connected and ready!")
 
 
 if __name__ == "__main__":
